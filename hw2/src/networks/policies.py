@@ -59,10 +59,11 @@ class MLPPolicy(nn.Module):
     @torch.no_grad()
     def get_action(self, obs: np.ndarray) -> np.ndarray:
         """Takes a single observation (as a numpy array) and returns a single action (as a numpy array)."""
-        # TODO: implement get_action
-        action = None
-
-        return action
+        obs = ptu.from_numpy(obs)
+        # Build the action distribution and sample one action from it.
+        action_distribution = self.forward(obs)
+        action = action_distribution.sample()
+        return ptu.to_numpy(action)
 
     def forward(self, obs: torch.FloatTensor):
         """
@@ -71,11 +72,15 @@ class MLPPolicy(nn.Module):
         flexible objects, such as a `torch.distributions.Distribution` object. It's up to you!
         """
         if self.discrete:
-            # TODO: define the forward pass for a policy with a discrete action space.
-            pass
+            # Discrete action space: network outputs logits -> Categorical distribution.
+            logits = self.logits_net(obs)
+            return distributions.Categorical(logits=logits)
         else:
-            # TODO: define the forward pass for a policy with a continuous action space.
-            pass
+            # Continuous action space: network outputs the mean; logstd is a
+            # learned parameter -> diagonal Gaussian.
+            mean = self.mean_net(obs)
+            std = torch.exp(self.logstd)
+            return distributions.Normal(mean, std)
 
     def update(self, obs: np.ndarray, actions: np.ndarray, *args, **kwargs) -> dict:
         """
@@ -99,11 +104,22 @@ class MLPPolicyPG(MLPPolicy):
         actions = ptu.from_numpy(actions)
         advantages = ptu.from_numpy(advantages)
 
-        # TODO: compute the policy gradient actor loss
-        loss = None
+        # Build the action distribution from the observations.
+        action_distribution = self.forward(obs)
 
-        # TODO: perform an optimizer step
-        pass
+        # log pi(a_t | s_t). For a multi-dim continuous action, sum log-probs
+        # over the action dimensions so we get one scalar per timestep.
+        log_probs = action_distribution.log_prob(actions)
+        if not self.discrete:
+            log_probs = log_probs.sum(dim=-1)
+
+        # Policy gradient loss: maximize E[log pi * A] => minimize -E[log pi * A].
+        loss = -(log_probs * advantages).mean()
+
+        # Optimizer step.
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
         return {
             "Actor Loss": loss.item(),

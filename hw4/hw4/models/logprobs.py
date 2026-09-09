@@ -43,7 +43,21 @@ def compute_per_token_logprobs(
     #
     # Respect enable_grad: when enable_grad=False this function should not build an
     # autograd graph.
-    raise NotImplementedError("student TODO: compute_per_token_logprobs")
+    grad_ctx = torch.enable_grad() if enable_grad else torch.no_grad()
+    with grad_ctx:
+        out = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+        logits = out.logits[:, :-1, :]  # [B, L-1, V]
+        targets = input_ids[:, 1:]  # [B, L-1]
+        B, Lm1, V = logits.shape
+
+        nll = F.cross_entropy(
+            logits.reshape(-1, V),
+            targets.reshape(-1),
+            reduction="none",
+        )
+        logprobs = (-nll).view(B, Lm1)
+
+    return logprobs
 
 
 def build_completion_mask(
@@ -66,7 +80,21 @@ def build_completion_mask(
     # prompt_input_len is the (padded) prompt length before completion tokens were
     # appended. You can use attention_mask to exclude padding; pad_token_id is passed
     # for convenience but a direct attention-mask-based solution is fine.
-    raise NotImplementedError("student TODO: build_completion_mask")
+    B, L = input_ids.shape
+    device = input_ids.device
+
+    # Per-token logprob index t (0 .. L-2) scores input_ids[:, t+1].
+    # The completion starts at input_ids index prompt_input_len, i.e. logprob index
+    # (prompt_input_len - 1).
+    positions = torch.arange(L - 1, device=device).unsqueeze(0).expand(B, -1)  # [B, L-1]
+    is_completion_position = positions >= (prompt_input_len - 1)
+
+    # Exclude padding: token at logprob-index t is input_ids[:, t+1], so use
+    # attention_mask[:, 1:] to check whether that target token is real (not pad).
+    non_pad = attention_mask[:, 1:].bool()
+
+    mask = (is_completion_position & non_pad).float()
+    return mask
 
 
 def masked_sum(x: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
@@ -110,4 +138,6 @@ def approx_kl_from_logprobs(
     #                             = KL(p_new || p_ref).
     #
     # The clamp to [-20, 20] is for numerical stability / variance control.
-    raise NotImplementedError("student TODO: approx_kl_from_logprobs")
+    delta = (ref_logprobs - new_logprobs).clamp(-log_ratio_clip, log_ratio_clip)
+    per_token = torch.exp(delta) - delta - 1
+    return masked_mean(per_token, mask, eps=eps)

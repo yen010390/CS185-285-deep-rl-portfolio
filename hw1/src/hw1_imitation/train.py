@@ -2,25 +2,29 @@
 
 from __future__ import annotations
 
+import csv
+import json
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import torch
 import tyro
 import wandb
 from torch.utils.data import DataLoader
 
+from hw1_imitation.model import build_policy, PolicyType
 from hw1_imitation.data import (
     Normalizer,
     PushtChunkDataset,
     download_pusht,
     load_pusht_zarr,
 )
-from hw1_imitation.model import build_policy, PolicyType
-from hw1_imitation.evaluation import Logger
+from hw1_imitation.evaluation import Logger, evaluate_policy
 
 LOGDIR_PREFIX = "exp"
 
@@ -29,14 +33,12 @@ LOGDIR_PREFIX = "exp"
 class TrainConfig:
     # The path to download the Push-T dataset to.
     data_dir: Path = Path("data")
-
     # The policy type -- either MSE or flow.
     policy_type: PolicyType = "mse"
     # The number of denoising steps to use for the flow policy (has no effect for the MSE policy).
     flow_num_steps: int = 10
     # The action chunk size.
     chunk_size: int = 8
-
     batch_size: int = 128
     lr: float = 3e-4
     weight_decay: float = 0.0
@@ -64,12 +66,7 @@ def parse_train_config(
     description: str = "Train a Push-T MLP policy.",
 ) -> TrainConfig:
     defaults = defaults or TrainConfig()
-    return tyro.cli(
-        TrainConfig,
-        args=args,
-        default=defaults,
-        description=description,
-    )
+    return tyro.cli(TrainConfig, args=args, default=defaults, description=description)
 
 
 def set_seed(seed: int) -> None:
@@ -86,30 +83,65 @@ def config_to_dict(config: TrainConfig) -> dict[str, Any]:
     return data
 
 
+def save_config(config: TrainConfig, log_dir: Path) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with open(log_dir / "config.json", "w") as f:
+        json.dump(config_to_dict(config), f, indent=4)
+
+
 def run_training(config: TrainConfig) -> None:
     set_seed(config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    # ── Data ─────────────────────────────────────────────────────────────────
     zarr_path = download_pusht(config.data_dir)
     states, actions, episode_ends = load_pusht_zarr(zarr_path)
     normalizer = Normalizer.from_data(states, actions)
 
     dataset = PushtChunkDataset(
-        states,
-        actions,
-        episode_ends,
+        states, actions, episode_ends,
         chunk_size=config.chunk_size,
         normalizer=normalizer,
     )
-
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,
         shuffle=True,
         drop_last=True,
+        num_workers=0,
+    )
+    total_steps = len(loader) * config.num_epochs
+    print(
+        f"Dataset: {len(dataset):,} samples | "
+        f"{len(loader)} batches/epoch | "
+        f"~{total_steps:,} total steps"
     )
 
+    # ── Logging setup ────────────────────────────────────────────────────────
+    exp_name = (
+        f"seed_{config.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        f"_{config.exp_name or ''}"
+    )
+    log_dir = Path(LOGDIR_PREFIX) / exp_name
+    if log_dir.exists():
+        shutil.rmtree(log_dir)
+    logger = Logger(log_dir)
+    save_config(config, log_dir)
+
+    # Plain-text loss log for plotting (wandb offline is hard to parse).
+    loss_csv_path = log_dir / "train_loss.csv"
+    with open(loss_csv_path, "w", newline="") as f:
+        csv.writer(f).writerow(["step", "loss"])
+
+    wandb.init(
+        project=config.wandb_project,
+        config=config_to_dict(config),
+        name=exp_name,
+        mode="offline",
+    )
+
+    # ── Model ────────────────────────────────────────────────────────────────
     model = build_policy(
         config.policy_type,
         state_dim=states.shape[1],
@@ -117,19 +149,80 @@ def run_training(config: TrainConfig) -> None:
         chunk_size=config.chunk_size,
         hidden_dims=config.hidden_dims,
     ).to(device)
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    exp_name = f"seed_{config.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    if config.exp_name is not None:
-        exp_name += f"_{config.exp_name}"
-    log_dir = Path(LOGDIR_PREFIX) / exp_name
-    wandb.init(
-        project=config.wandb_project, config=config_to_dict(config), name=exp_name
+    # No EMA — evaluate the live training weights directly.
+    # (EMA averages the velocity field and breaks flow-matching sampling.)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.lr,
+        weight_decay=config.weight_decay,
     )
-    logger = Logger(log_dir)
 
-    ### TODO: PUT YOUR MAIN TRAINING LOOP HERE ###
+    # ── Training loop ────────────────────────────────────────────────────────
+    global_step = 0
+    best_reward = -float("inf")
 
+    for epoch in range(config.num_epochs):
+        model.train()
+        for state, action_chunk in loader:
+            state = state.to(device)
+            action_chunk = action_chunk.to(device)
+
+            loss = model.compute_loss(state, action_chunk)
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+            # ── Loss logging ─────────────────────────────────────────────────
+            if global_step % config.log_interval == 0:
+                loss_val = loss.item()
+                wandb.log({"train/loss": loss_val}, step=global_step)
+                with open(loss_csv_path, "a", newline="") as f:
+                    csv.writer(f).writerow([global_step, loss_val])
+                print(
+                    f"Epoch {epoch:04d} | step {global_step:07d} | "
+                    f"loss {loss_val:.4f}"
+                )
+
+            # ── Evaluation ───────────────────────────────────────────────────
+            if global_step % config.eval_interval == 0:
+                model.eval()
+
+                # NOTE: evaluate_policy → logger.log() → wandb.log() already.
+                # Do NOT call wandb.log("eval/mean_reward") again here.
+                evaluate_policy(
+                    model=model,
+                    normalizer=normalizer,
+                    device=device,
+                    chunk_size=config.chunk_size,
+                    video_size=config.video_size,
+                    num_video_episodes=config.num_video_episodes,
+                    flow_num_steps=config.flow_num_steps,
+                    step=global_step,
+                    logger=logger,
+                )
+
+                model.train()
+
+                # Print latest reward to terminal only (not wandb)
+                if logger.csv_path.exists():
+                    df = pd.read_csv(logger.csv_path)
+                    if not df.empty and "eval/mean_reward" in df.columns:
+                        current_reward = float(df.iloc[-1]["eval/mean_reward"])
+                        print(f"  ↳ eval reward: {current_reward:.4f}")
+                        if current_reward > best_reward:
+                            best_reward = current_reward
+                            print(f"  ★ NEW BEST: {best_reward:.4f}")
+
+            global_step += 1
+
+    # NOTE: dump_for_grading() calls wandb.finish() internally.
+    # Do NOT call wandb.finish() before this line.
     logger.dump_for_grading()
+    print(f"Training done. Best reward: {best_reward:.4f}")
 
 
 def main() -> None:

@@ -59,6 +59,17 @@ class IQLAgent(nn.Module):
         Compute the expectile loss for IQL
         """
         # TODO(student): Implement the expectile loss
+        # HƯỚNG DẪN:
+        # Expectile loss (còn gọi L2_tau) dùng để hồi quy V(s) sao cho nó xấp xỉ
+        # "expectile thứ tau" của phân phối Q(s,a), thay vì trung bình (mean) như MSE thường.
+        #   L2_tau(u) = |tau - 1{u < 0}| * u^2
+        # Trong đó `adv` chính là u = Q(s,a) - V(s) (residual/advantage).
+        # Cách làm:
+        #   1. Tạo trọng số `weight`: nếu adv >= 0 thì weight = expectile (tau),
+        #      ngược lại (adv < 0) thì weight = 1 - expectile.
+        #      -> Dùng torch.where(adv >= 0, expectile, 1 - expectile)
+        #   2. Trả về weight * adv**2 (KHÔNG lấy mean ở đây — hàm này trả về loss
+        #      theo từng phần tử, việc .mean() sẽ được gọi ở nơi dùng hàm này).
         return ...
 
     @torch.compile
@@ -71,6 +82,16 @@ class IQLAgent(nn.Module):
         Update V(s) with expectile regression
         """
         # TODO(student): Compute the value loss
+        # HƯỚNG DẪN:
+        # V(s) được fit để xấp xỉ "expectile" của Q_target(s,a) (dùng target_critic,
+        # KHÔNG dùng self.critic, và phải torch.no_grad() vì V không được lan truyền
+        # gradient ngược vào critic).
+        #   1. Với torch.no_grad(): tính target_q = self.target_critic(observations, actions)
+        #      -> shape (n_ensembles, B). Lấy min qua chiều ensemble (dim=0) để có
+        #      pessimistic estimate: target_q.min(dim=0).values -> shape (B,)
+        #   2. Tính v = self.value(observations)  (CÓ gradient, vì đây là cái ta đang train)
+        #   3. adv = target_q - v
+        #   4. loss = self.iql_expectile_loss(adv, self.expectile).mean()
         v = ...
         loss = ...
 
@@ -98,6 +119,16 @@ class IQLAgent(nn.Module):
         Update Q(s, a)
         """
         # TODO(student): Compute the Q loss
+        # HƯỚNG DẪN:
+        # Điểm đặc biệt của IQL: Q không cần max/policy ở s' để bootstrap, mà dùng
+        # trực tiếp V(s') (đã được train ở update_v, gọi trước update_q trong update()).
+        #   1. Với torch.no_grad():
+        #        next_v = self.value(next_observations)          # shape (B,)
+        #        target = rewards + self.discount * (1 - dones) * next_v   # shape (B,)
+        #   2. q = self.critic(observations, actions)   -> shape (n_ensembles, B), CÓ gradient
+        #   3. loss = MSE giữa q và target, nhớ broadcast target lên chiều ensemble:
+        #        loss = ((q - target[None, :]) ** 2).mean()
+        #      (mỗi ensemble member đều được train khớp cùng 1 target — kiểu "twin Q")
         q = ...
         loss = ...
 
@@ -122,6 +153,21 @@ class IQLAgent(nn.Module):
         Update the actor using advantage-weighted regression
         """
         # TODO(student): Compute the actor loss
+        # HƯỚNG DẪN (Advantage-Weighted Regression - AWR):
+        # Ý tưởng: cho actor học behavior cloning trên các action tốt hơn V(s) hiện tại,
+        # trọng số theo exp(alpha * advantage) — action càng "tốt" so với baseline V(s)
+        # thì trọng số càng lớn.
+        #   1. Với torch.no_grad() (advantage KHÔNG lan truyền gradient vào actor):
+        #        target_q = self.target_critic(observations, actions).min(dim=0).values
+        #        v = self.value(observations)
+        #        adv = target_q - v
+        #        exp_adv = torch.exp(self.alpha * adv)
+        #        # Nên clamp exp_adv (vd .clamp(max=100.0)) để tránh loss nổ (advantage
+        #        # lớn -> exp() rất lớn -> mất ổn định huấn luyện)
+        #   2. dist = self.actor(observations)   -> phân phối hành động, CÓ gradient
+        #   3. log_probs = dist.log_prob(actions)
+        #   4. loss = -(exp_adv * log_probs).mean()
+        #      (dấu trừ vì ta muốn MAXIMIZE weighted log-likelihood -> minimize -đó)
         dist = ...
         loss = ...
 
@@ -158,4 +204,11 @@ class IQLAgent(nn.Module):
 
     def update_target_critic(self) -> None:
         # TODO(student): Update target_critic using Polyak averaging with self.target_update_rate
+        # HƯỚNG DẪN (Polyak / soft update):
+        # target_param <- (1 - tau) * target_param + tau * param,  với tau = self.target_update_rate
+        # Cách làm (dùng torch.no_grad() vì đây chỉ là cập nhật giá trị, không phải học bằng gradient):
+        #   with torch.no_grad():
+        #       for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+        #           target_param.data.mul_(1 - self.target_update_rate)
+        #           target_param.data.add_(self.target_update_rate * param.data)
         ...

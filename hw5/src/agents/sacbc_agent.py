@@ -64,6 +64,18 @@ class SACBCAgent(nn.Module):
         Update Q(s, a)
         """
         # TODO(student): Compute the Q loss
+        # HƯỚNG DẪN (soft Bellman backup như SAC gốc, nhưng offline nên actor được
+        # đánh giá tại next_observations thay vì rollout thật):
+        #   1. Với torch.no_grad():
+        #        a. Lấy phân phối actor tại s': next_dist = self.actor(next_observations)
+        #        b. Lấy hành động mẫu (reparameterized): next_actions = next_dist.rsample()
+        #        c. next_log_probs = next_dist.log_prob(next_actions)
+        #        d. next_q = self.target_critic(next_observations, next_actions).min(dim=0).values
+        #        e. Trừ đi entropy bonus (soft value):
+        #             next_v = next_q - self.beta() * next_log_probs
+        #        f. target = rewards + self.discount * (1 - dones) * next_v
+        #   2. q = self.critic(observations, actions)  -> shape (n_ensembles, B), CÓ gradient
+        #   3. loss = ((q - target[None, :]) ** 2).mean()
         q = ...
         loss = ...
 
@@ -88,6 +100,24 @@ class SACBCAgent(nn.Module):
         Update the actor
         """
         # TODO(student): Compute the actor loss
+        # HƯỚNG DẪN (SAC+BC = SAC objective + behavior-cloning regularizer):
+        # Actor loss gồm 3 phần cộng lại: q_loss + bc_loss + entropy_loss (đã có sẵn
+        # dòng "loss = q_loss + bc_loss + entropy_loss" phía dưới).
+        #   1. Lấy phân phối & action mẫu (CÓ gradient, dùng rsample để backprop được):
+        #        dist = self.actor(observations)
+        #        actor_actions = dist.rsample()
+        #        log_probs = dist.log_prob(actor_actions)
+        #   2. q_loss: muốn actor chọn action tối đa hoá Q -> minimize -Q
+        #        q = self.critic(observations, actor_actions).min(dim=0).values
+        #        q_loss = -q.mean()
+        #   3. bc_loss: phạt nếu action của actor lệch xa action trong dataset (giữ actor
+        #      gần behavior policy, tránh out-of-distribution actions):
+        #        mses = torch.mean((actor_actions - actions) ** 2, dim=-1)   # (B,)
+        #        bc_loss = self.alpha * mses.mean()
+        #   4. entropy_loss: phần entropy bonus của SAC (giữ policy có tính khám phá).
+        #      Dùng self.beta().detach() để KHÔNG lan gradient vào beta ở bước này
+        #      (beta được train riêng trong update_beta()):
+        #        entropy_loss = (self.beta().detach() * log_probs).mean()
         q_loss = ...
 
         mses = ...
@@ -156,4 +186,10 @@ class SACBCAgent(nn.Module):
 
     def update_target_critic(self) -> None:
         # TODO(student): Update target_critic using Polyak averaging with self.target_update_rate
+        # HƯỚNG DẪN: giống hệt IQL — soft update:
+        #   target_param <- (1 - tau) * target_param + tau * param, tau = self.target_update_rate
+        #   with torch.no_grad():
+        #       for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+        #           target_param.data.mul_(1 - self.target_update_rate)
+        #           target_param.data.add_(self.target_update_rate * param.data)
         ...

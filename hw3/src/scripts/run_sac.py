@@ -62,6 +62,10 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
             action = env.action_space.sample()
         else:
             # TODO(Section 3.1): Select an action
+            # HƯỚNG DẪN: gọi agent.get_action(observation) — hàm này đã tự thêm
+            # chiều batch, sample từ policy, và trả về numpy array shape (action_dim,)
+            # sẵn sàng đưa thẳng vào env.step().
+            #   action = agent.get_action(observation)
             action = None
             # ENDTODO
 
@@ -87,6 +91,14 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
         # Train the agent
         if step >= config["training_starts"]:
             # TODO(Section 3.1): Sample a batch of config["batch_size"] transitions from the replay buffer
+            # HƯỚNG DẪN:
+            #   batch = replay_buffer.sample(config["batch_size"])   # dict numpy arrays
+            #   batch = ptu.from_numpy(batch)                        # convert sang tensor
+            # SoftActorCritic.update() dùng tên tham số SỐ NHIỀU (observations, actions,
+            # rewards, next_observations, dones, step) TRÙNG với key của batch —
+            # nên có thể unpack thẳng bằng **batch, khác với DQNAgent ở hw3/scripts/run_dqn.py
+            # (nơi phải map thủ công từng key vì tên tham số ở đó là số ít):
+            #   update_info = agent.update(**batch, step=step)
             batch = None
             update_info = None
             # ENDTODO

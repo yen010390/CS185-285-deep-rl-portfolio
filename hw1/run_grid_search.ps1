@@ -1,0 +1,1 @@
+$lrs = @("1e-3", "3e-4", "1e-4"); foreach ($lr in $lrs) { Write-Host "--- Dang chay voi LR: $lr ---"; uv run python src/hw1_imitation/train.py --policy_type flow --lr $lr --eval_interval 50000 --exp_name "lr_sweep_$lr" }

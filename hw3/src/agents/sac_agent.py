@@ -89,6 +89,16 @@ class SoftActorCritic(nn.Module):
         if self.auto_tune_temperature:
             # TODO(Section 3.5): Initialize log_alpha, alpha_optimizer, and target_entropy
             # Hint: Initialize log_alpha to log(temperature) so alpha starts at the given temperature
+            # HƯỚNG DẪN:
+            # Ta học alpha (temperature) qua tham số hoá log_alpha (đảm bảo alpha=exp(log_alpha)
+            # luôn dương), tối ưu bằng optimizer riêng.
+            #   self.log_alpha = torch.tensor(
+            #       np.log(temperature), dtype=torch.float32, requires_grad=True,
+            #       device=ptu.device,
+            #   )
+            #   self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=alpha_learning_rate)
+            #   self.target_entropy = -action_dim   # heuristic chuẩn từ paper SAC gốc
+            #       (mục tiêu: mỗi chiều hành động có entropy trung bình xấp xỉ -1)
             self.log_alpha = None
             self.alpha_optimizer = None
             self.target_entropy = None
@@ -105,6 +115,9 @@ class SoftActorCritic(nn.Module):
         if self.auto_tune_temperature:
             # TODO(Section 3.5): Return the current learned temperature
             # skip here until we implement the temperature tuning
+            # HƯỚNG DẪN: alpha = exp(log_alpha). Trả về giá trị Python float
+            # (dùng .item() vì hàm này chỉ để LOG/đọc giá trị, không cần giữ gradient):
+            #   return self.log_alpha.exp().item()
             return None
             # ENDTODO
         else:
@@ -160,6 +173,14 @@ class SoftActorCritic(nn.Module):
         assert num_critic_networks == self.num_critic_networks
 
         # TODO(Section 3.6): Implement the "min" backup strategy (clipped double-Q).
+        # HƯỚNG DẪN:
+        # "min" (Clipped Double-Q, giống TD3/SAC gốc): lấy giá trị NHỎ NHẤT qua các
+        # critic thay vì trung bình, để có ước lượng "bi quan" (pessimistic), giảm
+        # overestimation bias khi có nhiều critic ensemble:
+        #   next_qs = next_qs.min(dim=0).values    # (batch_size,)
+        # (Giống cấu trúc với nhánh "mean" ở trên — cả 2 đều giảm chiều 0 từ
+        # (num_critics, batch) xuống (batch,); đoạn code bên dưới sẽ tự broadcast
+        # lại thành (num_critics, batch) nếu cần.)
         if self.target_critic_backup_type == "mean":
             next_qs = next_qs.mean(dim=0)
         elif self.target_critic_backup_type == "min":
@@ -197,6 +218,11 @@ class SoftActorCritic(nn.Module):
         # Compute target values
         with torch.no_grad():
             # TODO(Section 3.2): Sample from the actor and compute next Q-values
+            # HƯỚNG DẪN: đây là trong torch.no_grad() (tính target, không cần gradient)
+            # nên .sample() hay .rsample() đều được về mặt kết quả — dùng .sample() cho rõ ý.
+            #   next_action_distribution = self.actor(next_obs)
+            #   next_action = next_action_distribution.sample()
+            #   next_qs = self.target_critic(next_obs, next_action)   # (num_critics, batch)
             next_action_distribution = None
             next_action = None
             next_qs = None
@@ -204,6 +230,13 @@ class SoftActorCritic(nn.Module):
 
             if self.use_entropy_bonus and self.backup_entropy:
                 # TODO(Section 3.3): Add entropy bonus to the target values for SAC
+                # HƯỚNG DẪN (soft Bellman backup):
+                # SAC cộng thêm phần thưởng "entropy bonus" alpha*H(pi(.|s')) vào target,
+                # khuyến khích policy giữ tính ngẫu nhiên/khám phá:
+                #   next_action_entropy = self.entropy(next_action_distribution)  # (batch,)
+                #   next_qs = next_qs + self.get_temperature() * next_action_entropy[None, :]
+                # (next_qs có shape (num_critics, batch); [None,:] để broadcast entropy
+                # -vốn chỉ có shape (batch,)- ra đều cho mọi critic.)
                 next_action_entropy = None
                 # Hint: next_qs = ...
                 # ENDTODO
@@ -217,6 +250,8 @@ class SoftActorCritic(nn.Module):
             ), next_qs.shape
 
             # TODO(Section 3.2): Compute the target Q-value
+            # HƯỚNG DẪN: chuẩn Bellman backup, broadcast reward/done ra (num_critics, batch):
+            #   target_values = reward[None, :] + self.discount * (1 - done[None, :]) * next_qs
             target_values = None
             # ENDTODO
             assert target_values.shape == (
@@ -226,6 +261,9 @@ class SoftActorCritic(nn.Module):
 
         # TODO(Section 3.2): Update the critic
         # Predict Q-values
+        # HƯỚNG DẪN:
+        #   q_values = self.critic(obs, action)      # (num_critics, batch), CÓ gradient
+        #   loss = self.critic_loss(q_values, target_values)   # MSELoss, so khớp cả ensemble
         q_values = None
         assert q_values.shape == (self.num_critic_networks, batch_size), q_values.shape
 
@@ -250,6 +288,15 @@ class SoftActorCritic(nn.Module):
 
         # TODO(Section 3.3): Compute the entropy of the action distribution.
         # Note: Think about whether to use .rsample() or .sample() here...
+        # HƯỚNG DẪN:
+        # Với policy dạng squashed-Gaussian (không có công thức entropy đóng kín),
+        # ta ƯỚC LƯỢNG entropy bằng Monte Carlo: H(pi) ≈ -log pi(a|s) với a ~ pi.
+        # Hàm này còn được actor_loss_reparametrize() dùng để tính entropy bonus có
+        # GRADIENT chảy ngược vào actor (Section 3.3 muốn actor học tăng entropy),
+        # nên phải dùng .rsample() (reparameterization trick), KHÔNG dùng .sample()
+        # (vốn không differentiable).
+        #   action = action_distribution.rsample()
+        #   return -action_distribution.log_prob(action)   # shape (batch_size,)
         return None
         # ENDTODO
 
@@ -261,11 +308,19 @@ class SoftActorCritic(nn.Module):
 
         # TODO(Section 3.4): Sample actions using reparameterization (replace the placeholder below)
         # Note: Think about whether to use .rsample() or .sample() here, and why...
+        # HƯỚNG DẪN: actor loss cần lan truyền gradient QUA hành động được lấy mẫu
+        # (để tối ưu tham số actor thông qua đường Q(s, a~pi(s))) -> bắt buộc dùng
+        # .rsample() (reparameterization trick: a = mu + sigma*epsilon, epsilon~N(0,1)),
+        # KHÔNG dùng .sample() (không differentiable, sẽ chặn gradient).
+        #   action = action_distribution.rsample()
         action = torch.zeros(batch_size, self.action_dim, device=obs.device) # replace this with the correct action
         assert action.shape == (batch_size, self.action_dim), action.shape
         # ENDTODO
 
         # TODO(Section 3.4): Compute Q-values for the sampled state-action pair (replace the placeholder below)
+        # HƯỚNG DẪN: đánh giá hành động vừa lấy mẫu bằng critic ĐANG TRAIN (self.critic,
+        # KHÔNG phải target_critic — actor phải tối ưu theo Q hiện tại, không phải Q cũ):
+        #   q_values = self.critic(obs, action)   # shape (num_critic_networks, batch_size)
         q_values = torch.zeros(self.num_critic_networks, batch_size, device=obs.device) # replace this with the correct q_values
         assert q_values.shape == (self.num_critic_networks, batch_size), q_values.shape
         # ENDTODO
@@ -274,6 +329,13 @@ class SoftActorCritic(nn.Module):
         log_prob = action_distribution.log_prob(action)
 
         # TODO(Section 3.4): Compute the actor loss (replace the placeholder below)
+        # HƯỚNG DẪN:
+        # Actor muốn TỐI ĐA HOÁ Q(s, a~pi(s)) -> loss = -Q, lấy trung bình theo batch.
+        # Nếu có nhiều critic (ensemble), nên dùng ước lượng BI QUAN (min qua các critic,
+        # nhất quán với backup "min" ở Section 3.6) để tránh actor "khai thác" critic bị
+        # overestimate:
+        #   q_values_agg = q_values.min(dim=0).values   # (batch_size,)  — hoặc .mean(dim=0)
+        #   loss = -q_values_agg.mean()
         loss = torch.tensor(0.0, device=obs.device) # replace this with the correct loss
         # ENDTODO
 
@@ -286,6 +348,12 @@ class SoftActorCritic(nn.Module):
         loss, entropy, log_prob = self.actor_loss_reparametrize(obs)
 
         # TODO(Section 3.3): Add the entropy bonus to the actor loss: loss -= [your entropy bonus here]
+        # HƯỚNG DẪN:
+        # `entropy` ở đây đã là torch.mean(self.entropy(...)) (1 scalar CÓ gradient vì
+        # entropy() dùng rsample — xem TODO Section 3.3 phía trên). Cộng phần thưởng
+        # entropy vào loss (dấu TRỪ vì loss đang ở dạng "muốn minimize", còn ta muốn
+        # MAXIMIZE entropy):
+        #   loss = loss - self.get_temperature() * entropy
         pass
         # ENDTODO
 
@@ -318,6 +386,14 @@ class SoftActorCritic(nn.Module):
             return {}
 
         # TODO(Section 3.5): Implement dual gradient descent for temperature tuning
+        # HƯỚNG DẪN (công thức chuẩn từ SAC gốc, dùng tham số hoá log_alpha):
+        # Mục tiêu: nếu entropy hiện tại (~ -log_prob) THẤP hơn target_entropy thì
+        # tăng alpha (khuyến khích khám phá nhiều hơn); nếu CAO hơn thì giảm alpha.
+        #   alpha = self.log_alpha.exp()
+        #   alpha_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
+        # (.detach() trên (log_prob + target_entropy) vì ta chỉ muốn gradient chảy
+        # vào log_alpha, KHÔNG chảy ngược vào actor qua log_prob ở bước này — actor
+        # đã được cập nhật riêng trong update_actor().)
         alpha = None
         alpha_loss = None
 
@@ -358,12 +434,21 @@ class SoftActorCritic(nn.Module):
 
         critic_infos = []
         # TODO(Section 3.2): Update the critic for num_critic_updates steps
+        # HƯỚNG DẪN: gọi update_critic() lặp lại num_critic_updates lần (mỗi SAC
+        # update có thể update critic nhiều lần hơn actor — tham số này cho phép
+        # điều chỉnh tỉ lệ critic/actor updates). Nhớ dùng đúng tên biến đầu vào
+        # của hàm update() (observations, actions, rewards, next_observations, dones):
+        #   for _ in range(self.num_critic_updates):
+        #       info = self.update_critic(observations, actions, rewards, next_observations, dones)
+        #       critic_infos.append(info)
         for _ in range(self.num_critic_updates):
             info = None
             critic_infos.append(info)
         # ENDTODO
 
         # TODO(Section 3.3): Enable the actor update (once you have implemented entropy)
+        # HƯỚNG DẪN:
+        #   actor_info = self.update_actor(observations)
         actor_info = {}
         # ENDTODO
 
@@ -378,6 +463,16 @@ class SoftActorCritic(nn.Module):
         #  - step
         #  - self.target_update_period (None when using soft updates)
         #  - self.soft_target_update_rate (None when using hard updates)
+        # HƯỚNG DẪN:
+        # Đúng 1 trong 2 biến sẽ khác None (đã assert ở __init__), nên chỉ cần kiểm
+        # tra cái nào được cấu hình:
+        #   if self.target_update_period is not None:
+        #       # Hard update: copy toàn bộ trọng số mỗi target_update_period bước
+        #       if step % self.target_update_period == 0:
+        #           self.update_target_critic()
+        #   else:
+        #       # Soft update (Polyak averaging): trộn dần mỗi bước
+        #       self.soft_update_target_critic(self.soft_target_update_rate)
         pass
         # ENDTODO
 
