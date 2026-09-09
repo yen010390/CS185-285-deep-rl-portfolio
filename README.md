@@ -68,6 +68,7 @@ Implemented a full vanilla policy-gradient agent from scratch: Monte-Carlo full-
 
 **Progress:** the DQN critic update (epsilon-greedy action selection, Bellman target computation, Double-DQN action-selection/evaluation split, target-network sync) is implemented and verified end-to-end on `CartPole-v0`.
 
+![HW3 DQN on CartPole-v0: q_values, target_values, step, lr, grad_norm, epsilon vs. training step](images/hw3_result.png)
 ![HW3 DQN on CartPole-v0: q_values, target_values, step, lr, grad_norm, epsilon vs. training step](images/hw3_dqn_cartpole_wandb.png)
 *DQN on CartPole-v0 (100k steps): predicted Q-values track the Bellman targets closely throughout training (no divergence), epsilon anneals from 0.9 → 0.1 on schedule, and gradient norms stay bounded — indicating a numerically stable, correctly-wired training loop.*
 
