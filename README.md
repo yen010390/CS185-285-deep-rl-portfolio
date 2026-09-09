@@ -1,7 +1,9 @@
 # UC Berkeley CS 285/185 — Deep Reinforcement Learning
 ### Coursework Portfolio Summary (Winter 2026)
 
-This repository contains my coursework for **CS 285/185: Deep Reinforcement Learning**, spanning the full arc of the modern RL stack — from imitation learning through policy-gradient and Q-learning/actor-critic methods, to offline RL and RL post-training of large language models. Each assignment is a from-scratch PyTorch implementation (no reference solutions used), trained and evaluated on standard benchmarks (PushT, OpenAI Gym, OGBench, and a Qwen2.5 LLM).
+This is my work for CS 285/185, Deep Reinforcement Learning. This is my first time studying RL seriously, and I come from a different background (not originally a CS/ML major), so I am learning a lot of this from scratch — reading the course's slide and Youtube video, writing the additional code for baseline code, and debugging a lot of things I did not expect.
+
+I am putting this repo together to show what I have learned and what I can build. Some homeworks are fully done and trained, some are still in progress. I tried to be honest below about which is which, instead of making everything sound finished.
 
 ## Status overview
 
@@ -19,7 +21,9 @@ This repository contains my coursework for **CS 285/185: Deep Reinforcement Lear
 
 ## HW1 — Imitation Learning ✅
 
-Trained two behavior-cloning policies on the **PushT** manipulation task (state-based, action chunking) from expert demonstration data, and compared a simple regression baseline against a generative flow-matching policy:
+The task here is PushT — a robot arm has to push a T-shaped block into a target position, learning only from demonstration data (no reward signal, just imitation).
+
+I built two different policies to compare:
 
 - **MSE policy** — a 3-layer MLP (256-256-256, ReLU) maps the 5-d state directly to a flattened 8-step action chunk, trained with mean-squared-error regression against the expert chunk.
 - **Flow-matching policy** — a conditional flow-matching model (linear interpolation path `x_τ = τ·action + (1-τ)·noise`, regressed against the constant target velocity `action - noise`) conditioned on state + noisy action chunk + flow-time τ; actions are sampled via 10-step Euler integration of the learned velocity field.
@@ -42,7 +46,9 @@ Both use action chunking (chunk size 8, open-loop execution), AdamW (lr 3e-4, fi
 
 ## HW2 — Policy Gradients ✅
 
-Implemented a full vanilla policy-gradient agent from scratch: Monte-Carlo full-trajectory returns and reward-to-go Q-value estimates, an optional learned value-function baseline, Generalized Advantage Estimation (GAE-λ), and advantage standardization.
+This one implements a plain policy gradient method (REINFORCE-style) with a few variance-reduction options: reward-to-go, a learned value baseline, GAE, and advantage normalization.
+
+I ran an ablation on CartPole with 8 combinations: batch size (1000 or 4000) × reward-to-go (on/off) × advantage normalization (on/off).
 
 **Experiments:** 8-way ablation on `CartPole-v0` (100 iterations each, batch size 1000 vs. 4000, reward-to-go on/off, advantage normalization on/off).
 
@@ -64,6 +70,8 @@ Implemented a full vanilla policy-gradient agent from scratch: Monte-Carlo full-
 
 ## HW3 — Q-Learning & Actor-Critic 🔶
 
+This assignment covers DQN (with an optional Double-DQN version) for discrete actions, and SAC for continuous control.
+
 **Scope:** Deep Q-Network (vanilla + Double-DQN target) on CartPole, LunarLander, and Atari MsPacman; Soft Actor-Critic on InvertedPendulum, HalfCheetah, and Hopper, including an ablation of Q-backup strategies (clipped double-Q vs. single-Q).
 
 **Progress:** the DQN critic update (epsilon-greedy action selection, Bellman target computation, Double-DQN action-selection/evaluation split, target-network sync) is implemented and verified end-to-end on `CartPole-v0`.
@@ -76,7 +84,9 @@ SAC (entropy-regularized actor-critic, reparameterized policy gradient, automati
 
 ## HW4 — LLM RL Post-Training
 
-Built a single-GPU LoRA RL fine-tuning pipeline for `Qwen2.5-Math-1.5B-Instruct`, implementing two policy-gradient-family algorithms end-to-end:
+This assignment is different from the others — instead of a game/control environment, the "policy" is a language model (Qwen2.5-Math-1.5B), and I am fine-tuning it with reinforcement learning using LoRA (so only a small set of adapter weights actually get trained, not the full model).
+
+I implemented two algorithms:
 
 - **REINFORCE** with a sampled-KL penalty against a frozen reference policy.
 - **GRPO** — group-relative reward normalization + a PPO-style clipped surrogate objective, with clip-fraction diagnostics.
@@ -85,7 +95,7 @@ Supporting RL infrastructure: numerically-stable per-token log-probability compu
 
 ## HW5 — Offline RL
 
-Implemented three modern offline-RL algorithms sharing a common actor-critic scaffold (twin/ensemble critics with Polyak-averaged targets):
+Offline RL means learning a policy only from a fixed dataset of past experience, without being able to interact with the environment during training — so the agent has to be careful not to rely on actions it never actually saw in the data.
 
 - **IQL** (Implicit Q-Learning) — expectile-regression value function + advantage-weighted regression (AWR) policy extraction, which never queries the critic at out-of-distribution actions.
 - **SAC+BC** — entropy-regularized soft actor-critic with a behavior-cloning regularizer and a dual-gradient-descent entropy temperature, for stability under a fixed offline dataset.
